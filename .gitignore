@@ -5,6 +5,10 @@ build/
 dist/
 wheels/
 *.egg-info
-
+checkpoints/
+out/
+# 训练数据（体积大，不提交）
+dataset/*.jsonl
+dataset/.msc
 # Virtual environments
 .venv

@@ -91,7 +91,7 @@ def precompute_freqs_cis(
     用旋转角度来编码位置信息。这里提前把每个位置的旋转角 cos/sin 算好，避免每次 forward 重算。"""
 
     # 频率：1 / (rope_base^(2i/dim))，i 从 0 到 dim/2-1，呈几何级数从 1 递减到 1/rope_base
-    freqs, atten_factor = (
+    freqs, attn_factor = (
         1.0 / (rope_base ** (torch.arange(0, dim, 2)[: (dim // 2)] / dim)),
         1.0,
     )
@@ -271,6 +271,9 @@ class Attention(nn.Module):
             output = self.attn_dropout(F.softmax(scores.float(), dim=-1).type_as(xq)) @ xv
 
         # 两个分支最后都要过输出投影 o_proj（把多头结果拼回 hidden_size）和残差 dropout
+        # 注意：此时 output 形状是 [bs, heads, seq, head_dim]，要先转回 [bs, seq, heads*head_dim]
+        # 才能喂给 o_proj（它的输入维度是 heads*head_dim = hidden_size）
+        output = output.transpose(1, 2).contiguous().reshape(bs, seq_len, -1)
         output = self.resid_dropout(self.o_proj(output))
         return output, past_kv
 
