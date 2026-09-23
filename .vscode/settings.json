@@ -1,0 +1,5 @@
+{
+  "terminal.integrated.tabs.enabled": false,
+  "python.analysis.typeCheckingMode": "basic",
+   "editor.minimap.enabled": false
+}

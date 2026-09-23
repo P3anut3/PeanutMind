@@ -314,16 +314,21 @@ class MOEFeedForward(nn.Module):
 
     def forward(self, x):
         batch_size, seq_len, hidden_dim = x.shape
-        x_flat = x.view(-1, hidden_dim)  # 展平成 [batch*seq, dim]，逐 token 处理
-        # 每个 token 对每个专家的"权重"（softmax 转成概率）
+        x_flat = x.view(-1, hidden_dim)
+        # x_flat: [B*S, H]  例: [10880, 768]  （把 batch 和 seq 压成一个维度，每一行 = 一个 token）
+        # 每个 token 对每个专家的概率（softmax 转成概率）[batch*seq,dim]->[batch*seq,expert]
         scores = F.softmax(self.gate(x_flat), dim=-1)
-        # 选出权重最大的 k 个专家及其索引
+
+        # 选出权重最大的 K 个专家及其编号
         topk_weight, topk_idx = torch.topk(
             scores, k=self.config.num_experts_per_tok, dim=-1, sorted=False
         )
+        # topk_weight: [B*S, K]  例: [10880, 1]  （选中的专家权重）
+        # topk_idx:    [B*S, K]  例: [10880, 1]  （选中的专家编号 0~E-1）
+
         if self.config.norm_topk_prob:
             if self.config.num_experts_per_tok > 1:
-                # 把选中的 k 个权重再归一化，使它们的和为 1
+                # 把选中的 k 个权重再归一化，使它们的和为 1（形状不变，仍 [B*S, K]）
                 topk_weight = topk_weight / (topk_weight.sum(dim=-1, keepdim=True) + 1e-20)
             else:
                 # k=1：前向用权重 1.0，但梯度仍流过 top1（straight-through 直通估计技巧）
@@ -334,34 +339,55 @@ class MOEFeedForward(nn.Module):
                     k=1,
                     dim=-1,
                     sorted=False,
-                )[0]
-                topk_weight = top1 - top1.detach() + 1.0
-        y = torch.zeros_like(x_flat)  # 累加输出
+                )[0]                        # top1: [B*S, 1]  例: [10880, 1]
+                topk_weight = top1 - top1.detach() + 1.0   # 仍 [B*S, 1]
+
+        y = torch.zeros_like(x_flat)
+        # y: [B*S, H]  例: [10880, 768]  全 0，用来累加各专家的输出
+
         for i, expert in enumerate(self.experts):
-            mask = topk_idx == i  # 哪些 token 被路由到第 i 个专家
+            mask = topk_idx == i
+            # mask: [B*S, K]  例: [10880, 1]  bool，True = 该 token 选中了专家 i
+
             if mask.any():
-                # 找出被路由到该专家的 token 位置
+                # 找出被路由到专家 i 的那些 token 的行号
                 token_idx = mask.any(dim=-1).nonzero().flatten()
+                # mask.any(dim=-1): [B*S]    例: [10880]  bool，True = 该 token 选了专家 i
+                # .nonzero():       [N, 1]   例: [n, 1]   N = 选中专家 i 的 token 数
+                # .flatten():       [N]      例: [n]     这些 token 在 x_flat 里的行号
+
                 weight = topk_weight[mask].view(-1, 1)
+                # topk_weight[mask]: [N]     例: [n]     这些 token 对专家 i 的权重
+                # .view(-1, 1):      [N, 1]  例: [n, 1]
+
                 # index_add_：在 y 的 token_idx 这些行上，累加"专家输出 * 权重"
                 y.index_add_(0, token_idx, (expert(x_flat[token_idx]) * weight).to(y.dtype))
+                # x_flat[token_idx]: [N, H]  例: [n, 768]  归专家 i 的 token
+                # expert(...):       [N, H]  例: [n, 768]  过一遍 FFN
+                # * weight:          [N, H]  例: [n, 768]  （weight [N,1] 广播到 [N,H]）
+                # index_add_(0, ...): 在 y 的这 N 行上累加结果
+
             elif self.training:
                 # 训练时即使某专家没分到 token，也要把它接进计算图，
                 # 否则它的参数收不到梯度。0 * sum(...) 恒为 0，但能让参数进入图。
                 y[0, 0] += 0 * sum(p.sum() for p in expert.parameters())
+
         if self.training and self.config.router_aux_loss_coef > 0:
             # 辅助损失：鼓励路由器把 token 均匀分给各专家（负载均衡）
-            # one_hot(...).mean(0) = 每个专家实际分到的 token 比例
+            # one_hot 把专家编号转成 one-hot，mean(0) 得到"每个专家被选中的比例"
             load = F.one_hot(topk_idx, self.config.num_experts).float().mean(0)
+            # topk_idx [B*S, K] → one_hot [B*S, K, E] → mean(0) [K, E]（K=1 时是 [1, E]）
             self.aux_loss = (
-                (load * scores.mean(0)).sum()
+                (load * scores.mean(0)).sum()   # scores.mean(0): [E]
                 * self.config.num_experts
                 * self.config.router_aux_loss_coef
             )
         else:
             # 不训练时 aux_loss 为 0（new_zeros 保证和设备、dtype 一致）
             self.aux_loss = scores.new_zeros(1).squeeze()
+
         return y.view(batch_size, seq_len, hidden_dim)
+        # 还原形状: [B, S, H]  例: [32, 340, 768]
 
 
 class PeanutMindBlock(nn.Module):
