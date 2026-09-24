@@ -12,3 +12,6 @@ dataset/*.jsonl
 dataset/.msc
 # Virtual environments
 .venv
+.vscode
+doc
+.style.yapf

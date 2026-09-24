@@ -24,7 +24,7 @@ def init_model(args):
             )
         )
         moe_suffix = "_moe" if args.use_moe else ""
-        ckp = f"./{args.save_dir} / {args.weight}_{args.hidden_size}{moe_suffix}.pth"
+        ckp = f"./{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth"
         model.load_state_dict(torch.load(ckp, map_location=args.device), strict=True)
         if args.lora_weight != "None":
             apply_lora(model)
